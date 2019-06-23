@@ -1,5 +1,6 @@
 include("wannier90/projections.jl")
 
+import Base: ==
 """
 Represents an element.
 """
@@ -37,12 +38,12 @@ end
 
 element(z::Int) = getfirst(x->x.Z == z, ELEMENTS)
 
-abstract type AbstractAtom{T} end
+abstract type AbstractAtom{T, LT<:Length{T}} end
 
 #Definition of the AbstractAtom interface, each AbstractAtom needs to provide a method `atom(...)` that returns a datastructure with the Atom fields.
 elsym(atom::AbstractAtom) = element(atom).symbol
 "Extracts all the positions of the atoms and puts them in a vector."
-positions(atoms::Vector{<:AbstractAtom}, name::Symbol) = [position(x) for x in filter(y -> name(y) == name, atoms)]
+positions(atoms::Vector{<:AbstractAtom}, name::Symbol) = [position_cart(x) for x in filter(y -> name(y) == name, atoms)]
 getpseudoset(at::AbstractAtom) = getpseudoset(elsym(at), pseudo(at))
 
 "Takes a Vector of atoms and returns a Vector with the atoms having unique symbols."
@@ -58,25 +59,61 @@ function Base.unique(atoms::Vector{<:AbstractAtom{T}}) where T <: AbstractFloat
     return uni
 end
 
-#We use angstrom everywhere
-@with_kw mutable struct Atom{T<:AbstractFloat} <: AbstractAtom{T}
-    name        ::Symbol
-    element     ::Element
-    position    ::Point3{T}
-    pseudo      ::String = ""
-    projections ::Vector{Projection} = Projection[]
+@with_kw struct DFTU{T}
+	l::Int = -1
+	U::T   = zero(T)
+	J0::T  = zero(T)
+	#QE params
+	α::T   = zero(T)
+	β::T   = zero(T)
+	J::Vector{T} = T[]
 end
 
-Atom(name::Symbol, el::Element, pos::Point3; kwargs...)  = Atom(name=name, element=el, position=pos; kwargs...)
-Atom(name::Symbol, el::Symbol, pos::Point3; kwargs...)  = Atom(name=name, element=element(el), position=pos; kwargs...)
-Atom(orig_at::Atom, new_pos::Point3) = Atom(name(orig_at), element(orig_at), new_pos, pseudo(orig_at), projections(orig_at))
+function ==(x::DFTU, y::DFTU)
+	fnames = fieldnames(DFTU)
+	for fn in fnames
+		if getfield(x, fn) != getfield(y, fn)
+			return false
+		end
+	end
+	return true
+end
+
+isdefault(x::DFTU{T}) where {T} =
+	x == DFTU{T}() 
+
+isdefault(x::Any) = isempty(x)
+
+Base.string(::Type{Elk}, dftu::DFTU) = "$(dftu.l) $(dftu.U) $(dftu.J0)"
+
+# TODO Multiple l per atom in Elk??
+#We use angstrom everywhere
+@with_kw mutable struct Atom{T<:AbstractFloat, LT<:Length{T}} <: AbstractAtom{T, LT}
+    name          ::Symbol
+    element       ::Element
+    position_cart ::Point3{LT}
+    position_cryst::Point3{T}=zero(Point3{T})
+    pseudo        ::String = ""
+    projections   ::Vector{Projection} = Projection[]
+    magnetization ::Vec3{T} = zero(Vec3{T})
+    dftu          ::DFTU{T} = DFTU{T}()
+end
+
+Atom(name::Symbol, el::Element, pos_cart::Point3{LT}, pos_cryst::Point3{T}; kwargs...) where {T, LT<:Length{T}} =
+	Atom{T, LT}(name=name, element=el, position_cart=pos_cart, position_cryst=pos_cryst; kwargs...)
+Atom(name::Symbol, el::Symbol, args...; kwargs...) =
+	Atom(name, element(el), args...; kwargs...)
+
+#TODO this is a little iffy
+Atom(orig_at::Atom, new_pos_cart::Point3) = Atom(name(orig_at), element(orig_at), new_pos_cart, position_cryst(orig_at), pseudo(orig_at), projections(orig_at), magnetization(orig_at), dftu(orig_at))
 #Easiest way to implement a new abstractatom is to provide a way to access
-#the struct holding `name`, `position`, `element`, `pseudo`, `projection` fields
+#the struct holding `name`, `position_cart`, `element`, `pseudo`, `projection` fields
 atom(at::Atom) = at
 
-for interface_function in (:name, :position, :element, :pseudo, :projections)
+for interface_function in (:name, :position_cart, :position_cryst, :element, :pseudo, :projections, :magnetization, :dftu)
 	@eval $interface_function(at::AbstractAtom) = atom(at).$interface_function
 end
+
 
 function Base.range(at::AbstractAtom)
 	projs = projections(at)
@@ -87,8 +124,10 @@ end
 setname!(at::AbstractAtom, name::Symbol) =
 	atom(at).name = name
 
-setposition!(at::AbstractAtom{T}, position::Point3) where T =
-    atom(at).position = convert(Point3{T}, position)
+length_unit(at::Atom{T, LT}) where {T, LT} = LT
+
+setposition_cart!(at::AbstractAtom{T}, position_cart::Point3) where T =
+    atom(at).position_cart = length_unit(at).(convert(Point3{T}, position_cart))
 
 function setpseudo!(at::AbstractAtom, pseudo; print=true)
 	print && @info "Pseudo of atom $(name(at)) set to $pseudo."
@@ -98,8 +137,37 @@ end
 setprojections!(at::AbstractAtom, projections::Vector{Projection}) =
     atom(at).projections = projections
 
-bondlength(at1::AbstractAtom{T}, at2::AbstractAtom{T}, R=T(0.0)) where T<:AbstractFloat = norm(position(at1) - position(at2) - R)
+bondlength(at1::AbstractAtom{T}, at2::AbstractAtom{T}, R=T(0.0)) where T<:AbstractFloat = norm(position_cart(at1) - position_cart(at2) - R)
 
-import Base: ==
-==(at1::AbstractAtom, at2::AbstractAtom) =
-    name(at1)==name(at2) && norm(position(at1) - position(at2)) < 1e-6
+==(at1::AbstractAtom{T, LT}, at2::AbstractAtom{T, LT}) where {T, LT} =
+    name(at1) == name(at2) && norm(position_cart(at1) - position_cart(at2)) < LT(1e-6)
+
+#TODO fix documentation
+for hub_param in (:U, :J0, :α, :β)
+	f = Symbol("set_Hubbard_$(hub_param)!")
+	str = "$(hub_param)"
+	@eval begin
+		"""
+			$($(f))(at::AbstractAtom, v::AbstractFloat)
+
+		Set the Hubbard $($(str)) parameter for the specified atom.
+
+		Example:
+			`$($(f))(at, 2.1)'
+		"""
+		function $f(at::AbstractAtom{T}, v::AbstractFloat) where {T}
+			dftu(at).$(hub_param) = convert(T, v)
+		end
+	end
+end
+
+"""
+	set_Hubbard_J!(at::AbstractAtom, v::Vector{AbstractFloat})
+
+Set the Hubbard J parameter for the specified atom.
+
+Example:
+	`set_Hubbard_J(at, [2.1])'
+"""
+set_Hubbard_J!(at::AbstractAtom{T}, v::AbstractFloat) where {T} =
+	dftu(at).J = convert.(T, v)

@@ -1,18 +1,26 @@
 
 abstract type AbstractStructure{T} end
 
-mutable struct Structure{T <: AbstractFloat, AA<:AbstractAtom{T}} <: AbstractStructure{T}
+mutable struct Structure{T <: AbstractFloat, AA<:AbstractAtom{T}, LT <: Length{T}} <: AbstractStructure{T}
     name ::AbstractString
-    cell ::Mat3{T}
+    cell ::Mat3{LT}
     atoms::Vector{AA}
     data ::Dict{Symbol, Any}
 end
+Structure() =
+	Structure("NoName", eye(3), Atom[], Dict{Symbol, Any}())
 
-Structure(name, cell::Mat3{T}, atoms::Vector{Atom{T}}) where T <: AbstractFloat = Structure{T, Atom{T}}(name, cell, atoms, Dict{Symbol, Any}())
-Structure(str::AbstractStructure{T}, atoms::Vector{AT}) where {T <: AbstractFloat, AT<:AbstractAtom{T}} = Structure{T, AT}(name(str), cell(str), atoms, data(str))
-Structure(cell::Matrix{T}, atoms::Vector{Atom{T}}) where T <: AbstractFloat = Structure{T, Atom{T}}("NoName", cell, atoms, Dict{Symbol, Any}())
-Structure() = Structure("NoName", eye(3), Atom[], Dict{Symbol, Any}())
-Structure(cif_file::String; name="NoName") = cif2structure(cif_file, structure_name = name)
+Structure(name, cell::Mat3{LT}, atoms::Vector{Atom{T, LT}}) where {T<:AbstractFloat,LT<:Length{T}} =
+	Structure{T, Atom{T, LT}, LT}(name, cell, atoms, Dict{Symbol, Any}())
+
+Structure(str::AbstractStructure{T}, atoms::Vector{AT}) where {T<:AbstractFloat, AT<:AbstractAtom{T}} =
+	Structure{T, AT}(name(str), cell(str), atoms, data(str))
+
+Structure(cell::Matrix{LT}, atoms::Vector{Atom{T, LT}}) where {T<:AbstractFloat,LT<:Length{T}} =
+	Structure{T, Atom{T, LT}, LT}("NoName", cell, atoms, Dict{Symbol, Any}())
+
+Structure(cif_file::String; name="NoName") =
+	cif2structure(cif_file, structure_name = name)
 
 structure(str::Structure) = str
 """
@@ -79,16 +87,16 @@ function mergestructures(structures::Vector{<:AbstractStructure})
     out = nonvoid[1]
     for structure in nonvoid[2:end]
         for at1 in atoms(out), at2 in atoms(structure)
-            if at1==at2
-                for name in fieldnames(typeof(at1))
-                    if name in [:name, :element, :position]
+            if at1 == at2
+                for fname in fieldnames(typeof(at1))
+                    if fname in [:name, :element, :position_cart, :magnetization]
                         continue
                     end
-                    field = getfield(at2, name)
-                    if field == nothing || isempty(field)
+                    field = getfield(at2, fname)
+                    if field == nothing || isdefault(field)
                         continue
                     else
-                        setfield!(at1, name, field)
+                        setfield!(at1, fname, field)
                     end
                 end
             end
@@ -109,7 +117,7 @@ function cif2structure(cif_file::String; structure_name="NoName")
     return structure
 end
 
-function setpseudos!(structure::AbstractStructure, set, specifier=nothing; kwargs...)
+function setpseudos!(structure::AbstractStructure, set::Symbol, specifier::String=""; kwargs...)
     for (i, at) in enumerate(atoms(structure))
         pseudo = getdefault_pseudo(name(at), set, specifier=specifier)
         if pseudo == nothing
@@ -119,6 +127,18 @@ function setpseudos!(structure::AbstractStructure, set, specifier=nothing; kwarg
         end
     end
 end
+
+function setpseudos!(structure::AbstractStructure, atname::Symbol, set::Symbol, specifier::String=""; kwargs...)
+    for (i, at) in enumerate(atoms(structure, atname))
+        pseudo = getdefault_pseudo(name(at), set, specifier=specifier)
+        if pseudo == nothing
+            @warn "Pseudo for $(name(at)) at index $i not found in set $set."
+        else
+            setpseudo!(at, pseudo; kwargs...)
+        end
+    end
+end
+
 function setpseudos!(structure::AbstractStructure, at_pseudos::Pair{Symbol, String}...; kwargs...)
     for (atsym, pseudo) in at_pseudos
         for at in atoms(structure, atsym)
@@ -144,7 +164,7 @@ function create_supercell(structure::AbstractStructure, na::Int, nb::Int, nc::In
         end
         transl_vec = orig_cell'*[ia, ib, ic]
         for at in orig_ats
-            push!(new_atoms, Atom(at, position(at)+transl_vec))
+            push!(new_atoms, Atom(at, position_cart(at)+transl_vec))
         end
     end
     return Structure(name(structure), Mat3(new_cell), new_atoms, data(structure))

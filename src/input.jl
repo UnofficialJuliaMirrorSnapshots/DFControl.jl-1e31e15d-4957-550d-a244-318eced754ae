@@ -47,8 +47,10 @@ setdir!(input::DFInput, dir) = (input.dir = dir)
 name_ext(input::DFInput, ext)          = name(input) * ext
 infilename(input::DFInput{QE})         = name_ext(input, ".in")
 infilename(input::DFInput{Wannier90})  = name_ext(input, ".win")
+infilename(input::DFInput{Elk})        = "elk.in"
 outfilename(input::DFInput{QE})        = name_ext(input, ".out")
 outfilename(input::DFInput{Wannier90}) = name_ext(input, ".wout")
+outfilename(input::DFInput{Elk})       = "elk.out"
 inpath(input::DFInput)                 = joinpath(dir(input),  infilename(input))
 outpath(input::DFInput)                = joinpath(dir(input),  outfilename(input))
 
@@ -105,6 +107,7 @@ Tries to correct common errors for different input types.
 function sanitizeflags!(input::DFInput)
     cleanflags!(input)
 end
+
 function sanitizeflags!(input::DFInput{QE})
     setflags!(input, :outdir => "$(joinpath(dir(input), "outputs"))", print=false)
     cleanflags!(input)
@@ -137,13 +140,18 @@ function setdata!(input::DFInput, data::InputData)
 end
 
 #QE specific
-isbandscalc(input::DFInput{QE}) = flag(input, :calculation) == "bands"
-isnscfcalc(input::DFInput{QE}) = flag(input, :calculation) == "nscf"
-isscfcalc(input::DFInput{QE}) = flag(input, :calculation) == "scf"
-iscolincalc(input::DFInput{QE}) = all(flag(input, :nspin) .!= [nothing, 1])
-isnoncolincalc(input::DFInput{QE}) = flag(input, :noncolin) == true 
-isprojwfccalc(input::DFInput{QE}) = hasexec(input, "projwfc.x")
+isbandscalc(input::DFInput{QE})    = flag(input, :calculation) == "bands"
+isbandscalc(input::DFInput{Elk})   = input.name == "20"
 
+isnscfcalc(input::DFInput{QE})     = flag(input, :calculation) == "nscf"
+isnscfcalc(input::DFInput{Elk})    = input.name == "elk2wannier" #nscf == elk2wan??
+
+isscfcalc(input::DFInput{QE})      = flag(input, :calculation) == "scf"
+isscfcalc(input::DFInput{Elk})     = input.name ∈ ["0", "1"]
+
+iscolincalc(input::DFInput{QE})    = all(flag(input, :nspin) .!= [nothing, 1])
+isnoncolincalc(input::DFInput{QE}) = flag(input, :noncolin)    == true 
+isprojwfccalc(input::DFInput{QE})  = hasexec(input, "projwfc.x") 
 #TODO review this!
 outdata(input::DFInput) = input.outdata
 hasoutput(input::DFInput) = !isempty(outdata(input))
@@ -152,7 +160,7 @@ hasoutfile(input::DFInput) = ispath(outpath(input))
 hasnewout(input::DFInput, time) = mtime(outpath(input)) > time
 
 readoutput(input::DFInput{QE}) = qe_read_output(input)
-readoutput(input::DFInput{Wannier90}) = read_wannier_output(outpath(input))
+readoutput(input::DFInput{Wannier90}) = wan_read_output(outpath(input))
 
 pseudodir(input::DFInput{QE}) = flag(input, :pseudo_dir)
 
@@ -215,3 +223,28 @@ end
 function hasexec_assert(i::DFInput, exec::String)
     @assert hasexec(i, exec) "Please specify an input with $exec as it's executable."
 end
+
+
+#TODO Temporary handling of HubbardU situation
+function set_hubbard_flags!(input::DFInput{QE}, str::AbstractStructure{T}) where {T}
+	u_ats = unique(atoms(str))
+	input[:Hubbard_U]     = map(x -> dftu(x).U , u_ats)
+	input[:Hubbard_alpha] = map(x -> dftu(x).α , u_ats)
+	input[:Hubbard_beta]  = map(x -> dftu(x).β , u_ats)
+	Jmap = map(x -> dftu(x).J, u_ats)
+	input[:Hubbard_J]     = reshape(collect(Iterators.flatten(Jmap)), length(u_ats), length(Jmap[1]))  
+	input[:Hubbard_J0]    = map(x -> dftu(x).J0, u_ats)
+end
+
+function set_starting_magnetization_flags!(input::DFInput{QE}, str::AbstractStructure{T}) where {T}
+	u_ats = unique(atoms(str))
+	input[:starting_magnetization] = map(x -> [magnetization(x)...], u_ats)
+end
+
+
+
+
+
+
+
+

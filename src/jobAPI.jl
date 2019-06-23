@@ -425,12 +425,16 @@ end
 
 
 "sets the pseudopotentials to the specified one in the default pseudoset."
-function setpseudos!(job::DFJob, set, specifier=""; kwargs...)
+function setpseudos!(job::DFJob, set::Symbol, specifier::String=""; kwargs...)
     setpseudos!(job.structure, set, specifier; kwargs...)
     dir = getdefault_pseudodir(set)
     dir != nothing && setflags!(job, :pseudo_dir => "$dir", print=false)
     return job
 end
+
+"sets the pseudopotentials for the atom with name `atsym` to the specified one in the default pseudoset."
+setpseudos!(job::DFJob, atsym::Symbol, set::Symbol, specifier::String=""; kwargs...) =
+	setpseudos!(job.structure, atsym, set, specifier; kwargs...)
 
 "sets the pseudopotentials to the specified one in the default pseudoset."
 function setpseudos!(job::DFJob, pseudodir, at_pseudos::Pair{Symbol, String}...; kwargs...)
@@ -449,3 +453,43 @@ sets the projections of the specified atoms inside the job structure.
 """
 setprojections!(job::DFJob, projections...) =
     setprojections!(job.structure, projections...)
+
+
+for hub_param in (:U, :J0, :α, :β)
+	f = Symbol("set_Hubbard_$(hub_param)!")
+	str = "$hub_param"
+	@eval begin
+		"""
+			$($(f))(job::DFJob, ats_$($(str))s::Pair{Symbol, AbstractFloat}...)
+
+		Set the Hubbard $($(str)) parameter for the specified atoms.
+
+		Example:
+			`$($(f))(job, :Ir => 2.1, :Ni => 1.0, :O => 0.0)`
+		"""
+		function $f(job::DFJob, ats_Us::Pair{Symbol, AbstractFloat}...)
+			for (atsym, val) in ats_$(hub_param)s
+				$f.(atoms(job, atsym), val)
+			end
+		end
+		export $f
+	end
+end
+
+"""
+	set_Hubbard_J!(job::DFJob, ats_Js::Pair{Symbol, Vector{<:AbstractFloat}}...)
+
+Set the Hubbard J parameter for the specified atom.
+
+Example:
+	`set_Hubbard_J(job, :Ir => [2.1], :Ni => [1.0])'
+"""
+function set_Hubbard_J!(at::AbstractAtom, ats_Js::Pair{Symbol, Vector{<:AbstractFloat}}...)
+	for (atsym, val) in ats_Js
+		set_Hubbard_J!.(atoms(job, atsym), val)
+	end
+end
+
+export set_Hubbard_J!
+
+atoms(job::DFJob, atsym::Symbol) = atoms(job.structure, atsym)
