@@ -1,7 +1,7 @@
 
-abstract type AbstractStructure{T} end
+abstract type AbstractStructure{T, LT} end
 
-mutable struct Structure{T <: AbstractFloat, AA<:AbstractAtom{T}, LT <: Length{T}} <: AbstractStructure{T}
+mutable struct Structure{T <: AbstractFloat, AA<:AbstractAtom{T}, LT <: Length{T}} <: AbstractStructure{T, LT}
     name ::AbstractString
     cell ::Mat3{LT}
     atoms::Vector{AA}
@@ -89,7 +89,7 @@ function mergestructures(structures::Vector{<:AbstractStructure})
         for at1 in atoms(out), at2 in atoms(structure)
             if at1 == at2
                 for fname in fieldnames(typeof(at1))
-                    if fname in [:name, :element, :position_cart, :magnetization]
+                    if fname in [:name, :element, :position_cart, :position_cryst, :magnetization]
                         continue
                     end
                     field = getfield(at2, fname)
@@ -117,9 +117,14 @@ function cif2structure(cif_file::String; structure_name="NoName")
     return structure
 end
 
-function setpseudos!(structure::AbstractStructure, set::Symbol, specifier::String=""; kwargs...)
-    for (i, at) in enumerate(atoms(structure))
-        pseudo = getdefault_pseudo(name(at), set, specifier=specifier)
+function setpseudos!(structure::AbstractStructure, atoms::Vector{<:AbstractAtom}, set::Symbol, specifier::String=""; kwargs...)
+	dir = getdefault_pseudodir(set)
+	if dir == nothing
+		@warn "No pseudos found for set $set."
+		return
+	end
+    for (i, at) in enumerate(atoms)
+        pseudo = Pseudo(getdefault_pseudo(name(at), set, specifier=specifier), dir)
         if pseudo == nothing
             @warn "Pseudo for $(name(at)) at index $i not found in set $set."
         else
@@ -128,18 +133,13 @@ function setpseudos!(structure::AbstractStructure, set::Symbol, specifier::Strin
     end
 end
 
-function setpseudos!(structure::AbstractStructure, atname::Symbol, set::Symbol, specifier::String=""; kwargs...)
-    for (i, at) in enumerate(atoms(structure, atname))
-        pseudo = getdefault_pseudo(name(at), set, specifier=specifier)
-        if pseudo == nothing
-            @warn "Pseudo for $(name(at)) at index $i not found in set $set."
-        else
-            setpseudo!(at, pseudo; kwargs...)
-        end
-    end
-end
+setpseudos!(structure::AbstractStructure, atname::Symbol, set::Symbol, specifier::String=""; kwargs...) =
+	setpseudos!(structure, atoms(structure, atname), set, specifier; kwargs...)
 
-function setpseudos!(structure::AbstractStructure, at_pseudos::Pair{Symbol, String}...; kwargs...)
+setpseudos!(structure::AbstractStructure, set::Symbol, specifier::String=""; kwargs...) =
+	setpseudos!(structure, atoms(structure), set, specifier; kwargs...)
+
+function setpseudos!(structure::AbstractStructure, at_pseudos::Pair{Symbol, Pseudo}...; kwargs...)
     for (atsym, pseudo) in at_pseudos
         for at in atoms(structure, atsym)
             setpseudo!(at, pseudo; kwargs...)
@@ -169,3 +169,22 @@ function create_supercell(structure::AbstractStructure, na::Int, nb::Int, nc::In
     end
     return Structure(name(structure), Mat3(new_cell), new_atoms, data(structure))
 end
+
+"Rescales the cell of the structure."
+function scale_cell!(structure::Structure, v)
+	scalemat = [v 0 0; 0 v 0; 0 0 v]
+	structure.cell *= scalemat
+	for at in atoms(structure)
+		at.position_cart = structure.cell' * at.position_cryst
+	end
+end
+
+function set_magnetization!(str::Structure, atsym_mag::Pair{Symbol, <:AbstractVector}...)
+	for (atsym, mag) in atsym_mag
+		for at in atoms(str, atsym)
+			set_magnetization!(at, mag)
+		end
+	end
+end
+
+

@@ -54,10 +54,9 @@ function qe_read_output(filename::String, T=Float64)
 
                 #PseudoPot
             elseif occursin("PseudoPot", line)
-                !haskey(out, :pseudos) && (out[:pseudos] = Dict{Symbol, String}())
+                !haskey(out, :pseudos) && (out[:pseudos] = Dict{Symbol, Pseudo}())
                 pseudopath = readline(f) |> strip |> splitdir
-                out[:pseudos][Symbol(split(line)[5])] = pseudopath[2]
-                !haskey(out, :pseudodir) && (out[:pseudodir] = pseudopath[1])
+                out[:pseudos][Symbol(split(line)[5])] = Pseudo(pseudopath...)
                 #fermi energy
             elseif occursin("Fermi", line)
                 out[:fermi]        = parse(T, split(line)[5])
@@ -195,8 +194,8 @@ end
 function qe_read_output(input::DFInput{QE}, args...; kwargs...)
     out = Dict{Symbol, Any}()
     if isprojwfccalc(input)
+        pdos_files = searchdir(dir(input), ".pdos_")
         if flag(input, :kresolveddos) == true
-            pdos_files = searchdir(dir(input), ".pdos_")
             out[:heatmaps]   = Vector{Matrix{Float64}}()
             out[:ytickvals] = Vector{Vector{Float64}}()
             out[:yticks]    = Vector{Vector{Float64}}()
@@ -207,14 +206,13 @@ function qe_read_output(input::DFInput{QE}, args...; kwargs...)
                 push!(out[:yticks], ticks)
             end
         else
-            out[:energies] = Vector{Vector{Float64}}()
-            out[:values]   = Vector{Vector{Float64}}()
+            out[:pdos] = NamedTuple{(:energies, :values), Tuple{Vector{Float64}, Vector{Float64}}}[]
             for f in pdos_files
                 energs, vals = qe_read_pdos(joinpath(dir(input), f), args...; kwargs...)
-                push!(out[:energies], energs)
-                push!(out[:vals], vals)
+                push!(out[:pdos], (energies=energs, values=vals))
             end
         end
+        out[:states], out[:bands] = qe_read_projwfc(outpath(input))
         return out
     else
         return qe_read_output(outpath(input))
@@ -414,7 +412,7 @@ end
 function qe_DFTU(speciesid::Int, parsed_flags::SymAnyDict)
 	U  = 0.0
 	J0 = 0.0
-	J  = Float64[]
+	J  = [0.0]
 	α  = 0.0
 	β  = 0.0
 	if haskey(parsed_flags, :Hubbard_U) && length(parsed_flags[:Hubbard_U]) >= speciesid
@@ -435,17 +433,18 @@ function qe_DFTU(speciesid::Int, parsed_flags::SymAnyDict)
 	return DFTU{Float64}(U=U, J0=J0, α=α, β=β, J=J)
 end
 
+degree2π(ang) = ang / 180 * π
+
 function qe_magnetization(atid::Int, parsed_flags::SymAnyDict)
-	if haskey(parsed_flags, :starting_magnetization) && length(parsed_flags[:starting_magnetization]) >= atid
-		all_magnetizations = parsed_flags[:starting_magnetization]
-		if isa(all_magnetizations, Vector{<:Vector})
-			return Vec3{Float64}(all_magnetizations[atid]...)
-		else
-			return Vec3{Float64}(0.0, 0.0, all_magnetizations[atid])
-		end
-	else
-		return Vec3{Float64}(0.0, 0.0, 0.0)
-	end
+	θ = haskey(parsed_flags, :angle1) && length(parsed_flags[:angle1]) >= atid ? parsed_flags[:angle1][atid] : 0.0
+	θ = degree2π(θ)
+	ϕ = haskey(parsed_flags, :angle2) && length(parsed_flags[:angle2]) >= atid ? parsed_flags[:angle2][atid] : 0.0
+	ϕ = degree2π(ϕ)
+
+	start = haskey(parsed_flags, :starting_magnetization) && length(parsed_flags[:starting_magnetization]) >= atid ?
+		parsed_flags[:starting_magnetization][atid] : 0.0
+
+	return start * Vec3{Float64}(sin(θ) * cos(ϕ), sin(θ) * sin(ϕ), cos(θ))
 end
 
 function extract_atoms!(parsed_flags, atom_block, pseudo_block, cell::Mat3{LT}) where {LT <: Length}
@@ -454,6 +453,7 @@ function extract_atoms!(parsed_flags, atom_block, pseudo_block, cell::Mat3{LT}) 
     option = atom_block.option
     if option == :crystal || option == :crystal_sg
         primv = cell
+        cell  = Mat3(Matrix(1.0I, 3, 3))
     elseif option == :alat
         primv = alat(parsed_flags, true) * Mat3(Matrix(1.0I, 3, 3))
     elseif option == :bohr
@@ -462,7 +462,7 @@ function extract_atoms!(parsed_flags, atom_block, pseudo_block, cell::Mat3{LT}) 
         primv = 1Ang .* Mat3(Matrix(1.0I, 3, 3))
     end
     for (speciesid, (at_sym, positions)) in enumerate(atom_block.data)
-        pseudo = haskey(pseudo_block.data, at_sym) ? pseudo_block.data[at_sym] : error("Please specify a pseudo potential for atom '$at_sym'.")
+        pseudo = haskey(pseudo_block.data, at_sym) ? pseudo_block.data[at_sym] : (@warn "No Pseudo found for atom '$at_sym'.\nUsing Pseudo()."; Pseudo())
         for pos in positions
             push!(atoms, Atom(name=at_sym, element=element(at_sym), position_cart=primv' * pos, position_cryst=ustrip.(inv(cell') * pos), pseudo=pseudo, magnetization=qe_magnetization(speciesid, parsed_flags), dftu=qe_DFTU(speciesid, parsed_flags)))
         end
@@ -548,11 +548,12 @@ function qe_read_input(filename; execs=[Exec("pw.x")], run=true, structure_name=
         nat  = parsed_flags[:nat]
         ntyp = parsed_flags[:ntyp]
 
-        pseudos = InputData(:atomic_species, :none, Dict{Symbol, String}())
+        pseudos = InputData(:atomic_species, :none, Dict{Symbol, Pseudo}())
+        pseudo_dir = pop!(parsed_flags, :pseudo_dir, "./")
         for k=1:ntyp
             push!(used_lineids, i + k)
             sline = strip_split(lines[i+k])
-            pseudos.data[Symbol(sline[1])] = sline[end]
+            pseudos.data[Symbol(sline[1])] = Pseudo(sline[end], pseudo_dir) 
         end
 
         i = findcard("cell_parameters")
@@ -603,7 +604,8 @@ function qe_read_input(filename; execs=[Exec("pw.x")], run=true, structure_name=
         end
         structure = extract_structure!(structure_name, parsed_flags, cell_block, atom_block, pseudos)
         delete!.((parsed_flags,), [:ibrav, :nat, :ntyp, :A, :celldm_1, :celldm])
-        delete!.((parsed_flags,), [:Hubbard_U, :Hubbard_J0, :Hubbard_alpha, :Hubbard_beta, :Hubbard_J, :starting_magnetization]) #hubbard and magnetization flags
+        delete!.((parsed_flags,), [:Hubbard_U, :Hubbard_J0, :Hubbard_alpha, :Hubbard_beta, :Hubbard_J])
+        delete!.((parsed_flags,), [:starting_magnetization, :angle1, :angle2]) #hubbard and magnetization flags
     else
         structure = nothing
     end
@@ -677,7 +679,7 @@ end
 
 Writes a Quantum Espresso input file.
 """
-function save(input::DFInput{QE}, structure, filename::String=inpath(input))
+function save(input::DFInput{QE}, structure, filename::String=inpath(input); relative_positions=true)
     if haskey(flags(input), :calculation)
         setflags!(input, :calculation => replace(input[:calculation], "_" => "-"), print=false)
     end
@@ -721,7 +723,7 @@ function save(input::DFInput{QE}, structure, filename::String=inpath(input))
             write(f, "/\n\n")
         end
         if exec(input, "pw.x") != nothing
-            write_structure(f, input, structure)
+            write_structure(f, input, structure, relative_positions=relative_positions)
         end
         for dat in input.data
             if dat.name != :noname
@@ -741,20 +743,20 @@ function save(input::DFInput{QE}, structure, filename::String=inpath(input))
         end
     end
     #TODO handle writing hubbard and magnetization better
-    delete!.((input.flags,), (:Hubbard_U, :Hubbard_J0, :Hubbard_J, :Hubbard_alpha, :Hubbard_beta, :starting_magnetization))
+    delete!.((input.flags,), (:Hubbard_U, :Hubbard_J0, :Hubbard_J, :Hubbard_alpha, :Hubbard_beta,
+    						  :starting_magnetization, :angle1, :angle2))
 end
 
-function write_structure(f, input::DFInput{QE}, structure)
+function write_structure(f, input::DFInput{QE}, structure; relative_positions=true)
     unique_at = unique(atoms(structure))
     pseudo_lines = String[]
     atom_lines   = String[]
     for at in unique_at
-        push!(pseudo_lines, "$(name(at)) $(element(at).atomic_weight)   $(pseudo(at))\n")
+        push!(pseudo_lines, "$(name(at)) $(element(at).atomic_weight)   $(pseudo(at).name)\n")
     end
 
     for at in atoms(structure)
-        pos = uconvert.(Ang, position_cart(at))
-        push!(atom_lines, "$(name(at))  $(ustrip(pos[1])) $(ustrip(pos[2])) $(ustrip(pos[3]))\n")
+        push!(atom_lines, position_string(QE, at, relative=relative_positions))
     end
 
     write(f, "ATOMIC_SPECIES\n")
@@ -765,7 +767,11 @@ function write_structure(f, input::DFInput{QE}, structure)
     write_cell(f, ustrip.(uconvert.(Ang, cell(structure))))
     write(f, "\n")
 
-    write(f, "ATOMIC_POSITIONS (angstrom) \n")
+    if relative_positions
+	    write(f, "ATOMIC_POSITIONS (crystal) \n")
+    else
+	    write(f, "ATOMIC_POSITIONS (angstrom) \n")
+    end
     write.((f, ), atom_lines)
     write(f, "\n")
 end

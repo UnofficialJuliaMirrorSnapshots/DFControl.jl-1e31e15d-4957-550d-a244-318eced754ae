@@ -4,19 +4,17 @@ module DFControl
     using Media
     using Dates
     using DelimitedFiles
+    using Reexport
     import Base.Iterators.flatten
-    using StaticArrays
-
-
 
     using RecipesBase
-    using StaticArrays
+    @reexport using StaticArrays
     using Parameters
 
-	using Unitful
-	Unitful.register(@__MODULE__);
-	import Unitful: Length, @unit, FreeUnits, unit
+	@reexport using Unitful
+	import Unitful: Length, @unit, FreeUnits, unit, 𝐋, FreeUnits
 
+	Unitful.register(@__MODULE__)
 	Base.eltype(::Type{Length{T}}) where T = T
 	@unit Ang "Ang" Angstrom              1e-1u"nm"               false
     @unit e₀  "eₒ"  ElementaryCharge      1.602176620898e-19*u"C" false
@@ -24,6 +22,12 @@ module DFControl
     @unit a₀  "a₀"  BohrRadius            1u"ħ^2/(1kₑ*me*e₀^2)"   false
     @unit Eₕ  "Eₕ"  HartreeEnergy         1u"me*e₀^4*kₑ^2/(1ħ^2)" true
     @unit Ry  "Ry"  RydbergEnergy         0.5Eₕ                   true
+
+    const localunits = Unitful.basefactors
+    const LengthType{T,A} = Quantity{T,𝐋,FreeUnits{A,𝐋,nothing}}
+
+ 	Base.show(io::IO, ::Type{Quantity{T,𝐋,FreeUnits{A,𝐋,nothing}}}) where {T,A} =
+	    dfprint(io, "LengthType{$T, $A}")
 
 	@inline function StaticArrays._inv(::StaticArrays.Size{(3,3)}, A::SMatrix{3,3, LT}) where {LT<:Length}
 
@@ -94,6 +98,8 @@ module DFControl
     function __init__()
         @require Juno = "e5e0dc1b-0480-54bc-9374-aad01c23163d" include("display/printing_juno.jl")
         init_defaults(default_file)
+		merge!(Unitful.basefactors, localunits)
+		Unitful.register(@__MODULE__)
     end
 
     const pythonpath = Sys.iswindows() ? joinpath(depsdir, "python2", "python") : joinpath(dirname(@__DIR__), "deps", "python2", "bin", "python")

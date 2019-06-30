@@ -4,7 +4,7 @@
 
 Saves a DFJob, it's job file and all it's input files.
 """
-function save(job::DFJob, local_dir=job.local_dir)
+function save(job::DFJob, local_dir=job.local_dir; kwargs...)
     local_dir = local_dir != "" ? local_dir : error("Please specify a valid local_dir!")
     if !ispath(local_dir)
         mkpath(local_dir)
@@ -12,18 +12,18 @@ function save(job::DFJob, local_dir=job.local_dir)
     end
     sanitizeflags!(job)
     job.local_dir = local_dir
-    return writejobfiles(job)
+    return writejobfiles(job; kwargs...)
 end
 
 """
-    submit(job::DFJob; server=job.server, server_dir=job.server_dir)
+    submit(job::DFJob; server=job.server, server_dir=job.server_dir, rm_prev=true, kwargs...)
 
-Saves the job locally, and then either runs it locally using `qsub` (when `job.server == "localhost"`) or sends it to the specified `job.server` in `job.server_dir`, and submits it using `qsub` on the server.
+Saves the job locally, and then either runs it locally using `qsub` (when `job.server == "localhost"`) or sends it to the specified `job.server` in `job.server_dir`, and submits it using `qsub` on the server. Kwargs get passed through to `save(job; kwargs...)`. If `rm_prev == true` previous `job.tt` output files will be removed.
 """
-function submit(job::DFJob; server=job.server, server_dir=job.server_dir)
-    save(job)
+function submit(job::DFJob; server=job.server, server_dir=job.server_dir, rm_prev=true, kwargs...)
+    save(job; kwargs...)
     job.server = server
-    job.metadata[:slurmid] = qsub(job)
+    job.metadata[:slurmid] = qsub(job; rm_prev=rm_prev)
 end
 
 """
@@ -128,6 +128,7 @@ end
 setname!(job::DFJob, oldn, newn) = (input(job, oldn).name = newn)
 Base.insert!(job::DFJob, index::Int, input::DFInput) = insert!(job.inputs, index, input)
 Base.push!(job::DFJob, input::DFInput) = push!(job.inputs, input)
+Base.pop!(job::DFJob) = pop!(job.inputs)
 
 """Access an input inside the job using it's name. E.g `job["scf"]`"""
 function Base.getindex(job::DFJob, id::String)
@@ -319,16 +320,8 @@ end
 "Reads throught the pseudo files and tries to figure out the correct cutoffs"
 function setcutoffs!(job::DFJob)
     @assert job.server == "localhost" "Cutoffs can only be automatically set if the pseudo files live on the local machine."
-    pseudofiles = filter(!isempty, [pseudo(at) for at in atoms(job)])
-    pseudodirs  = String[]
-    for i in inputs(job)
-        if package(i) == QE
-            dr = pseudodir(i)
-            if dr != nothing && ispath(dr) #absolute paths only allowed in QE
-                push!(pseudodirs, dr)
-            end
-        end
-    end
+    pseudofiles = map(x->x.name, filter(!isempty, [pseudo(at) for at in atoms(job)]))
+    pseudodirs  = map(x->x.dir, filter(!isempty, [pseudo(at) for at in atoms(job)]))
     @assert !isempty(pseudofiles) "No atoms with pseudo files found."
     @assert !isempty(pseudodirs) "No valid pseudo directories found in the inputs."
     maxecutwfc = 0.0
@@ -423,28 +416,21 @@ function setcell!(job::DFJob, cell_::Mat3)
     return job
 end
 
-
 "sets the pseudopotentials to the specified one in the default pseudoset."
-function setpseudos!(job::DFJob, set::Symbol, specifier::String=""; kwargs...)
+setpseudos!(job::DFJob, set::Symbol, specifier::String=""; kwargs...) = 
     setpseudos!(job.structure, set, specifier; kwargs...)
-    dir = getdefault_pseudodir(set)
-    dir != nothing && setflags!(job, :pseudo_dir => "$dir", print=false)
-    return job
-end
 
 "sets the pseudopotentials for the atom with name `atsym` to the specified one in the default pseudoset."
 setpseudos!(job::DFJob, atsym::Symbol, set::Symbol, specifier::String=""; kwargs...) =
 	setpseudos!(job.structure, atsym, set, specifier; kwargs...)
 
 "sets the pseudopotentials to the specified one in the default pseudoset."
-function setpseudos!(job::DFJob, pseudodir, at_pseudos::Pair{Symbol, String}...; kwargs...)
+setpseudos!(job::DFJob, at_pseudos::Pair{Symbol, Pseudo}...; kwargs...) = 
     setpseudos!(job.structure, at_pseudos...; kwargs...)
-    setflags!(job, :pseudo_dir => "$pseudodir", print=false)
-    return job
-end
 
 "Returns the projections inside the job for the specified `i`th atom in the job with id `atsym`."
 projections(job::DFJob, atsym::Symbol, i=1) = projections(atom(job, atsym, i))
+
 "Returns all the projections inside the job."
 projections(job::DFJob) = projections(structure(job))
 
@@ -454,22 +440,21 @@ sets the projections of the specified atoms inside the job structure.
 setprojections!(job::DFJob, projections...) =
     setprojections!(job.structure, projections...)
 
-
 for hub_param in (:U, :J0, :α, :β)
 	f = Symbol("set_Hubbard_$(hub_param)!")
 	str = "$hub_param"
 	@eval begin
 		"""
-			$($(f))(job::DFJob, ats_$($(str))s::Pair{Symbol, AbstractFloat}...)
+			$($(f))(job::DFJob, ats_$($(str))s::Pair{Symbol, <:AbstractFloat}...; print=true)
 
 		Set the Hubbard $($(str)) parameter for the specified atoms.
 
 		Example:
 			`$($(f))(job, :Ir => 2.1, :Ni => 1.0, :O => 0.0)`
 		"""
-		function $f(job::DFJob, ats_Us::Pair{Symbol, AbstractFloat}...)
-			for (atsym, val) in ats_$(hub_param)s
-				$f.(atoms(job, atsym), val)
+		function $f(job::DFJob, $(hub_param)::Pair{Symbol, <:AbstractFloat}...; print=true)
+			for (atsym, val) in $(hub_param)
+				$f.(atoms(job, atsym), val; print=print)
 			end
 		end
 		export $f
@@ -477,19 +462,26 @@ for hub_param in (:U, :J0, :α, :β)
 end
 
 """
-	set_Hubbard_J!(job::DFJob, ats_Js::Pair{Symbol, Vector{<:AbstractFloat}}...)
+	set_Hubbard_J!(job::DFJob, ats_Js::Pair{Symbol, Vector{<:AbstractFloat}}...; print=true)
 
 Set the Hubbard J parameter for the specified atom.
 
 Example:
 	`set_Hubbard_J(job, :Ir => [2.1], :Ni => [1.0])'
 """
-function set_Hubbard_J!(at::AbstractAtom, ats_Js::Pair{Symbol, Vector{<:AbstractFloat}}...)
+function set_Hubbard_J!(job::DFJob, ats_Js::Pair{Symbol, <:Vector{<:AbstractFloat}}...; print=true)
 	for (atsym, val) in ats_Js
-		set_Hubbard_J!.(atoms(job, atsym), val)
+		set_Hubbard_J!.(atoms(job, atsym), (val,); print=print)
 	end
 end
 
 export set_Hubbard_J!
 
 atoms(job::DFJob, atsym::Symbol) = atoms(job.structure, atsym)
+
+"Rescales the unit cell."
+scale_cell!(job::DFJob, s) =
+	scale_cell!(job.structure, s)
+
+set_magnetization!(job::DFJob, args...) =
+	set_magnetization!(job.structure, args...)

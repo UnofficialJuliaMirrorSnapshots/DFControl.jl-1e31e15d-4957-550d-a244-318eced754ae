@@ -163,7 +163,7 @@ function getdefault_jobheader()
     if isdefined(DFControl, :default_job_header)
         return default_job_header
     else
-        return ""
+        return [""]
     end
 end
 
@@ -193,7 +193,8 @@ function findspecifier(str, strs::Vector{<:AbstractString})
     return testout
 end
 
-function getpseudoset(elsym::Symbol, str::String)
+function getpseudoset(elsym::Symbol, ps::Pseudo)
+	str = ps.name
     for (key, val) in default_pseudos[elsym]
         if length(val) == 1
             str == val[1] && return key, ""

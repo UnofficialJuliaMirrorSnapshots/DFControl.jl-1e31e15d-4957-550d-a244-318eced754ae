@@ -64,8 +64,8 @@ setflags!(job, :nspin => 2, print=false)
 job["nscf"][:nspin] = 3
 @test job["nscf"][:nspin] == 3
 
-job[:nspin] = 10
-@test job["nscf"][:nspin] == 10
+job[:nspin] = 2
+@test job["nscf"][:nspin] == 2
 
 job["nscf"][:Hubbard_U] = [1.0]
 @test job["nscf"][:Hubbard_U] == [1.0]
@@ -131,15 +131,15 @@ end
 setcutoffs!(job)
 @test job["scf"][:ecutwfc] == 32.0
 
-setpseudos!(job, "pseudos", :Pt => "Pt.UPF")
-@test job.structure.atoms[1].pseudo == "Pt.UPF"
+setpseudos!(job, :Pt => Pseudo("Pt.UPF", "testassets/pseudos"))
+@test job.structure.atoms[1].pseudo == Pseudo("Pt.UPF", "testassets/pseudos")
 setpseudos!(job, :Pt, :test)
-@test job.structure.atoms[1].pseudo == "Pt.UPF"
+@test job.structure.atoms[1].pseudo == Pseudo("Pt.UPF", "testassets/pseudos")
 
 setpseudos!(job, :test)
-@test job.structure.atoms[1].pseudo == "Pt.UPF"
+@test job.structure.atoms[1].pseudo == Pseudo("Pt.UPF", "testassets/pseudos")
 
-@test splitdir(job["nscf"][:pseudo_dir])[end] == "pseudos"
+
 testorbs = [:s, :p]
 setprojections!(job, :Pt => testorbs)
 @test convert.(Symbol, [p.orb for p in projections(job, :Pt)]) == testorbs
@@ -175,8 +175,17 @@ setdataoption!(job, :k_points, :test, print=false)
 report = progressreport(job; onlynew=false, print=false)
 @test report[:fermi] == 17.4572
 @test length(report[:accuracy]) == 9
+oldat = atoms(job)[1]
 newatompos = outputdata(job, "vc_relax", onlynew=false)[:final_structure]
 job.structure = newatompos
+push!(job.structure.atoms, oldat)
+
+cp(joinpath(testdir, "testassets", "pseudos"), joinpath(testdir, "testassets", "pseudos_copy"), force=true)
+setpseudos!(job, :Si => Pseudo("Si.UPF", joinpath(testdir, "testassets", "pseudos_copy")))
+save(job)
+@test ispath(joinpath(job.local_dir, "Si.UPF"))
+@test atom(job, :Si).pseudo == Pseudo("Si.UPF", job.local_dir)
+rm(joinpath(testdir, "testassets", "pseudos_copy"), recursive=true)
 
 job["nscf"][:occupations] = "smearing"
 job["nscf"][:degauss] = 2.0
@@ -186,8 +195,28 @@ projwfc = gencalc_projwfc(job["nscf"], -20, 10, 0.05)
 @test projwfc[:degauss] == job["nscf"][:degauss]
 @test projwfc[:ngauss] == 1
 
+set_Hubbard_U!(job, :Si => 1.0)
+@test atoms(job, :Si)[1].dftu.U == 1.0
+
+
+prev_a = cell(job)[1, :]
+prev_b = cell(job)[2, :]
+prev_c = cell(job)[3, :]
+prev_pos = position_cart.(atoms(job))
+scale_cell!(job, 2)
+@test prev_a .* 2 == cell(job)[1, :]
+@test prev_b .* 2 == cell(job)[2, :]
+@test prev_c .* 2 == cell(job)[3, :]
+for (p, at) in zip(prev_pos, atoms(job))
+	@test round.(DFControl.ustrip(p * 2), digits=5) == round.(DFControl.ustrip(position_cart(at)), digits=5)
+end
+
+set_magnetization!(job, :Pt => [1.0, 0.0, 0.0])
+@test magnetization(atom(job, :Pt)) == DFControl.Vec3(1.0, 0.0, 0.0)
+
 rm.(DFControl.inpath.(job.inputs))
 
 rm(joinpath(splitdir(DFControl.inpath(job.inputs[1]))[1], "pw2wan_wanup.in"))
 rm(joinpath(splitdir(DFControl.inpath(job.inputs[1]))[1], "pw2wan_wandn.in"))
 rm(joinpath(job.local_dir, "job.tt"))
+rm.(joinpath.((job.local_dir,), filter(x -> occursin("UPF", x), readdir(job.local_dir))))
