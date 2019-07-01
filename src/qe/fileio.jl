@@ -279,7 +279,7 @@ end
 Reads partial dos file. One can specify the column of values to read.
 """
 function qe_read_pdos(filename::String, column=1; fermi=0)
-    read_tmp = readdlm(filename)
+    read_tmp = readdlm(filename, skipstart=1)
     energies = read_tmp[:,1] .- fermi
     values   = read_tmp[:,1+column]
 
@@ -422,7 +422,7 @@ function qe_DFTU(speciesid::Int, parsed_flags::SymAnyDict)
 		J0 = parsed_flags[:Hubbard_J0][speciesid]
 	end
 	if haskey(parsed_flags, :Hubbard_J) && length(parsed_flags[:Hubbard_J]) >= speciesid
-		J = Float64.(parsed_flags[:Hubbard_J][speciesid, :])
+		J = Float64.(parsed_flags[:Hubbard_J][:, speciesid])
 	end
 	if haskey(parsed_flags, :Hubbard_alpha) && length(parsed_flags[:Hubbard_alpha]) >= speciesid
 		α = parsed_flags[:Hubbard_alpha][speciesid]
