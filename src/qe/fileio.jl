@@ -153,7 +153,7 @@ function qe_read_output(filename::String, T=Float64)
                     lowest_force      = force
                     out[:total_force] = force
                 end
-            elseif occursin("Magnetic moment per site", line)
+            elseif occursin("Magnetic moment per site", line) 
                 key = :colin_mag_moments
                 out[key] = T[]
                 line = readline(f)
@@ -184,7 +184,7 @@ function qe_read_output(filename::String, T=Float64)
                 for i = 1:length(out[:k_cart])
                     push!(eig_band, k_eigvals[i][i1])
                 end
-                push!(out[:bands], DFBand(get(out, :k_cart,[zero(Vec3)]), get(out, :k_cryst, [zero(Vec3)]), eig_band))
+                push!(out[:bands], DFBand(get(out, :k_cart, Vec3{T}[]), get(out, :k_cryst, Vec3{T}[]), eig_band))
             end
         end
         return out
@@ -274,14 +274,14 @@ function qe_read_kpdos(filename::String, column=1; fermi=0)
 end
 
 """
-    qe_read_pdos(filename::String, column=1; fermi=0)
+    qe_read_pdos(filename::String)
 
-Reads partial dos file. One can specify the column of values to read.
+Reads partial dos file.
 """
-function qe_read_pdos(filename::String, column=1; fermi=0)
+function qe_read_pdos(filename::String)
     read_tmp = readdlm(filename, skipstart=1)
-    energies = read_tmp[:,1] .- fermi
-    values   = read_tmp[:,1+column]
+    energies = read_tmp[:, 1]
+    values   = read_tmp[:, 2:end]
 
     return energies, values
 end
@@ -405,7 +405,7 @@ function extract_cell!(flags, cell_block)
             _alat = 1u"a₀"
         end
 
-        return _alat .* cell_block.data
+        return (_alat .* cell_block.data)'
     end
 end
 
@@ -464,7 +464,7 @@ function extract_atoms!(parsed_flags, atom_block, pseudo_block, cell::Mat3{LT}) 
     for (speciesid, (at_sym, positions)) in enumerate(atom_block.data)
         pseudo = haskey(pseudo_block.data, at_sym) ? pseudo_block.data[at_sym] : (@warn "No Pseudo found for atom '$at_sym'.\nUsing Pseudo()."; Pseudo())
         for pos in positions
-            push!(atoms, Atom(name=at_sym, element=element(at_sym), position_cart=primv' * pos, position_cryst=ustrip.(inv(cell') * pos), pseudo=pseudo, magnetization=qe_magnetization(speciesid, parsed_flags), dftu=qe_DFTU(speciesid, parsed_flags)))
+            push!(atoms, Atom(name=at_sym, element=element(at_sym), position_cart=primv * pos, position_cryst=ustrip.(inv(cell) * pos), pseudo=pseudo, magnetization=qe_magnetization(speciesid, parsed_flags), dftu=qe_DFTU(speciesid, parsed_flags)))
         end
     end
 
@@ -764,7 +764,7 @@ function write_structure(f, input::DFInput{QE}, structure; relative_positions=tr
 
     write(f, "\n")
     write(f, "CELL_PARAMETERS (angstrom)\n")
-    write_cell(f, ustrip.(uconvert.(Ang, cell(structure))))
+    write_cell(f, (ustrip.(uconvert.(Ang, cell(structure))))')
     write(f, "\n")
 
     if relative_positions
