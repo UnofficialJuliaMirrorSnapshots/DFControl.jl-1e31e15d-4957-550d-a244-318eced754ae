@@ -262,8 +262,12 @@ execs(job::DFJob, name) =
 
 Goes through the calculations of the job and sets the exec flags to the specified ones.
 """
-setexecflags!(job::DFJob, exec, flags...) =
-    setexecflags!.(job.inputs, (exec, flags)...)
+function setexecflags!(job::DFJob, exec, flags...)
+	for i in job.inputs
+	    setexecflags!(i, exec, flags...)
+    end
+end
+
 """
     rmexecflags!(job::DFJob, exec, flags...)
 
@@ -488,3 +492,6 @@ set_magnetization!(job::DFJob, args...) =
 
 Base.joinpath(job::DFJob, p) =
 	joinpath(job.local_dir, p)
+
+create_supercell(job::DFJob, args...) =
+	create_supercell(structure(job), args...)
