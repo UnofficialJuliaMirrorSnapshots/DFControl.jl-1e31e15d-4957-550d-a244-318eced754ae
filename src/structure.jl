@@ -89,7 +89,7 @@ function mergestructures(structures::Vector{<:AbstractStructure})
         for at1 in atoms(out), at2 in atoms(structure)
             if at1 == at2
                 for fname in fieldnames(typeof(at1))
-                    if fname in [:name, :element, :position_cart, :position_cryst, :magnetization]
+                    if fname in [:name, :element, :position_cart, :position_cryst]
                         continue
                     end
                     field = getfield(at2, fname)
@@ -189,5 +189,12 @@ function set_magnetization!(str::Structure, atsym_mag::Pair{Symbol, <:AbstractVe
 		end
 	end
 end
+
+"""
+	volume(str::Structure)
+
+Calculates the volume for the unit cell of the structure.
+"""
+volume(str::Structure) = det(str.cell)
 
 
