@@ -48,11 +48,9 @@ getpseudoset(at::AbstractAtom) = getpseudoset(elsym(at), pseudo(at))
 
 "Takes a Vector of atoms and returns a Vector with the atoms having unique symbols."
 function Base.unique(atoms::Vector{<:AbstractAtom{T}}) where T <: AbstractFloat
-    names    = Symbol[]
     uni = AbstractAtom{T}[]
     for at in atoms
-        if !in(name(at), names)
-            push!(names, name(at))
+        if findfirst(x -> isequal_species(x, at), uni) === nothing
             push!(uni, at)
         end
     end
@@ -156,6 +154,18 @@ bondlength(at1::AbstractAtom{T}, at2::AbstractAtom{T}, R=T(0.0)) where T<:Abstra
 
 ==(at1::AbstractAtom{T, LT}, at2::AbstractAtom{T, LT}) where {T, LT} =
     name(at1) == name(at2) && norm(position_cart(at1) - position_cart(at2)) < LT(1e-6)
+
+function isequal_species(at1::AbstractAtom, at2::AbstractAtom)
+    for f in fieldnames(typeof(at1))
+        if f in (:position_cart, :position_cryst, :projections)
+            continue
+        end
+        if getfield(at1, f) != getfield(at2, f)
+            return false
+        end
+    end
+    return true
+end
 
 #TODO fix documentation
 for hub_param in (:U, :J0, :α, :β)
